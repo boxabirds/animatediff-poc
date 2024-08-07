@@ -15,6 +15,7 @@ transformers = "*"
 opencv-python = "*"
 opencv-contrib-python = "*"
 numpy = "*"
+peft = "*"
 
 [dev-packages]
 

@@ -1,64 +1,77 @@
 import torch
-from diffusers import MotionAdapter, AnimateDiffPipeline, DDIMScheduler
+from diffusers import MotionAdapter, AnimateDiffPipeline, DDIMScheduler, EulerAncestralDiscreteScheduler
+import cv2
+import numpy as np
+import argparse
 from PIL import Image
-from torchvision import transforms
 
-def image_to_latent(pipe, image):
-    if isinstance(image, Image.Image):
-        image = transforms.ToTensor()(image).unsqueeze(0)
-    image = image.to(pipe.device)
-    latent = pipe.vae.encode(image).latent_dist.sample()
-    latent = latent * pipe.vae.config.scaling_factor
-    return latent
+def generate_frames(prompt, negative_prompt="bad quality, worse quality", num_frames=16, num_inference_steps=20):
+    output = pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        num_frames=num_frames,
+        guidance_scale=7.5,
+        num_inference_steps=num_inference_steps,
+        generator=torch.Generator("cuda").manual_seed(666),
+    )
+    return output.frames[0]
 
-def generate_chained_video(pipe, prompts, num_frames_per_segment=16, seed=42):
-    all_frames = []
-    last_latent = None
-    generator = torch.Generator().manual_seed(seed)
+def export_to_mp4(frames, output_path, fps=10):
+    # Convert the first frame to numpy array to get dimensions
+    first_frame = np.array(frames[0])
+    height, width, layers = first_frame.shape
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-    for prompt in prompts:
-        if last_latent is not None:
-            # Replicate the last latent across the time dimension
-            latents = last_latent.unsqueeze(2).repeat(1, 1, num_frames_per_segment, 1, 1)
-        else:
-            latents = None
+    for frame in frames:
+        # Convert PIL Image to numpy array and change color space
+        frame_array = cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR)
+        video.write(frame_array)
 
-        output = pipe(
-            prompt=prompt,
-            latents=latents,
-            num_frames=num_frames_per_segment,
-            generator=generator,
-        )
-        
-        all_frames.extend(output.frames[0])
-        
-        # Encode the last frame to use as the starting point for the next segment
-        last_frame = output.frames[0][-1]
-        last_latent = image_to_latent(pipe, last_frame)
+    video.release()
 
-    return all_frames
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate animated video using AnimateDiffPipeline")
+    parser.add_argument("--output", type=str, default="animation.mp4", help="Output file name")
+    args = parser.parse_args()
 
-# Set up the pipeline
-adapter = MotionAdapter.from_pretrained("guoyww/animatediff-motion-adapter-v1-5-2")
-model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
-pipe = AnimateDiffPipeline.from_pretrained(model_id, motion_adapter=adapter)
-pipe.scheduler = DDIMScheduler.from_pretrained(model_id, subfolder="scheduler")
-pipe.enable_vae_slicing()
+    #adapter = MotionAdapter.from_pretrained("guoyww/animatediff-motion-adapter-v1-5-3")
+    adapter = MotionAdapter.from_pretrained("guoyww/animatediff-motion-adapter-v1-5-2")
+    model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
+    #model_id = "SG161222/Realistic_Vision_V6.0_B1_noVAE"
+    pipe = AnimateDiffPipeline.from_pretrained(model_id, motion_adapter=adapter, torch_dtype=torch.float16).to("cuda")
+    # pipe.scheduler = DDIMScheduler.from_pretrained(
+    #     model_id,
+    #     subfolder="scheduler",
+    #     beta_schedule="linear",
+    #     clip_sample=False,
+    #     timestep_spacing="linspace",
+    #     steps_offset=1
+    # )
+    scheduler = EulerAncestralDiscreteScheduler.from_pretrained(
+        model_id,
+        subfolder="scheduler",
+        beta_schedule="linear",
+    )
 
-# Move the pipeline to GPU if available
-device = "cuda" if torch.cuda.is_available() else "cpu"
-pipe = pipe.to(device)
+    # enable memory savings
+    pipe.enable_vae_slicing()
+    #pipe.enable_vae_tiling()
 
-# Generate the chained video
-prompts = [
-    "A serene beach at sunrise, gentle waves",
-    "The same beach at midday, busy with people",
-    "The beach at sunset, golden light on the water",
-    "The beach at night under a starry sky"
-]
+    # enable FreeInit
+    pipe.enable_free_init(method="butterworth", use_fast_sampling=False)
 
-frames = generate_chained_video(pipe, prompts)
+    # generate frames
+    frames = generate_frames(
+        prompt="cute ginger kitten on sunny day walking in a forest towards the camera",
+        negative_prompt="bad quality, worse quality",
+        num_frames=32,
+        num_inference_steps=20
+    )
 
-# Export to GIF
-from diffusers.utils import export_to_gif
-export_to_gif(frames, "chained_beach_day.gif")
+    # disable FreeInit
+    pipe.disable_free_init()
+
+    # export to mp4
+    export_to_mp4(frames, args.output)
