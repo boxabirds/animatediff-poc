@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+torch = "*"
+diffusers = "*"
+accelerate = "*"
+einops = "*"
+moviepy = "*"
+torchvision = "*"
+torchaudio = "*"
+transformers = "*"
+opencv-python = "*"
+opencv-contrib-python = "*"
+numpy = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.11"
